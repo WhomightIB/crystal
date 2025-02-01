@@ -17,19 +17,28 @@ module IO::Buffered
 
   # Reads at most *slice.size* bytes from the wrapped `IO` into *slice*.
   # Returns the number of bytes read.
+  #
+  # TODO: Add return type restriction `Int32`
   abstract def unbuffered_read(slice : Bytes)
 
-  # Writes at most *slice.size* bytes from *slice* into the wrapped `IO`.
-  # Returns the number of bytes written.
+  # Writes *slice* entirely into the wrapped `IO`.
+  #
+  # TODO: Add return type restriction `Nil`
   abstract def unbuffered_write(slice : Bytes)
 
   # Flushes the wrapped `IO`.
+  #
+  # TODO: Add return type restriction `Nil`
   abstract def unbuffered_flush
 
   # Closes the wrapped `IO`.
+  #
+  # TODO: Add return type restriction `Nil`
   abstract def unbuffered_close
 
   # Rewinds the wrapped `IO`.
+  #
+  # TODO: Add return type restriction `Nil`
   abstract def unbuffered_rewind
 
   # Return the buffer size used
@@ -40,7 +49,7 @@ module IO::Buffered
   # Set the buffer size of both the read and write buffer
   # Cannot be changed after any of the buffers have been allocated
   def buffer_size=(value)
-    if @in_buffer || @out_buffer
+    if (@in_buffer || @out_buffer) && (buffer_size != value)
       raise ArgumentError.new("Cannot change buffer_size after buffers have been allocated")
     end
     @buffer_size = value

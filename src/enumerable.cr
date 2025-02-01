@@ -558,6 +558,25 @@ module Enumerable(T)
     raise Enumerable::NotFoundError.new
   end
 
+  # Yields each value until the first truthy block result and returns that result.
+  #
+  # Accepts an optional parameter `if_none`, to set what gets returned if
+  # no element is found (defaults to `nil`).
+  #
+  # ```
+  # [1, 2, 3, 4].find_value { |i| i > 2 }     # => true
+  # [1, 2, 3, 4].find_value { |i| i > 8 }     # => nil
+  # [1, 2, 3, 4].find_value(-1) { |i| i > 8 } # => -1
+  # ```
+  def find_value(if_none = nil, & : T ->)
+    each do |i|
+      if result = yield i
+        return result
+      end
+    end
+    if_none
+  end
+
   # Returns the first element in the collection,
   # If the collection is empty, calls the block and returns its value.
   #
@@ -636,11 +655,7 @@ module Enumerable(T)
     h = Hash(U, Array(T)).new
     each do |e|
       v = yield e
-      if h.has_key?(v)
-        h[v].push(e)
-      else
-        h[v] = [e]
-      end
+      h.put_if_absent(v) { Array(T).new } << e
     end
     h
   end
@@ -1018,9 +1033,9 @@ module Enumerable(T)
   # [1, 2, 3].map { |i| i * 10 } # => [10, 20, 30]
   # ```
   def map(& : T -> U) : Array(U) forall U
-    ary = [] of U
-    each { |e| ary << yield e }
-    ary
+    map_with_index do |e|
+      yield e
+    end
   end
 
   # Like `map`, but the block gets passed both the element and its index.
@@ -1974,7 +1989,7 @@ module Enumerable(T)
   # ["a", "b", "c", "b"].tally # => {"a"=>1, "b"=>2, "c"=>1}
   # ```
   def tally : Hash(T, Int32)
-    tally_by(&.itself)
+    tally_by(Hash(T, Int32).new, &.itself)
   end
 
   # Tallies the collection. Accepts a *hash* to count occurrences.
@@ -1997,9 +2012,20 @@ module Enumerable(T)
   # ```
   # (1..5).to_a # => [1, 2, 3, 4, 5]
   # ```
-  def to_a
+  def to_a : Array(T)
     ary = [] of T
     each { |e| ary << e }
+    ary
+  end
+
+  # Returns an `Array` with the results of running *block* against each element of the collection.
+  #
+  # ```
+  # (1..5).to_a { |i| i * 2 } # => [2, 4, 6, 8, 10]
+  # ```
+  def to_a(& : T -> U) : Array(U) forall U
+    ary = [] of U
+    each { |e| ary << yield e }
     ary
   end
 

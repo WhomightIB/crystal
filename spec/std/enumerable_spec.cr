@@ -1,6 +1,25 @@
 require "spec"
 require "spec/helpers/iterate"
 
+module SomeInterface; end
+
+private record One do
+  include SomeInterface
+end
+
+private record Two do
+  include SomeInterface
+end
+
+private struct InterfaceEnumerable
+  include Enumerable(SomeInterface)
+
+  def each(&)
+    yield One.new
+    yield Two.new
+  end
+end
+
 private class SpecEnumerable
   include Enumerable(Int32)
 
@@ -128,6 +147,34 @@ describe "Enumerable" do
       end
       called.should eq 6
       elements.should eq [1, 2, 1, 2, 1, 2]
+    end
+  end
+
+  describe "to_a" do
+    it "with a block" do
+      SpecEnumerable.new.to_a { |e| e*2 }.should eq [2, 4, 6]
+    end
+
+    it "without a block" do
+      SpecEnumerable.new.to_a.should eq [1, 2, 3]
+    end
+
+    it "without a block of an interface type" do
+      InterfaceEnumerable.new.to_a.should eq [One.new, Two.new]
+    end
+  end
+
+  describe "#to_set" do
+    context "without block" do
+      it "creates a Set from the unique elements of the collection" do
+        {1, 1, 2, 3}.to_set.should eq Set{1, 2, 3}
+      end
+    end
+
+    context "with block" do
+      it "creates a Set from running the block against the collection's elements" do
+        {1, 2, 3, 4, 5}.to_set { |i| i // 2 }.should eq Set{0, 1, 2}
+      end
     end
   end
 
@@ -507,6 +554,31 @@ describe "Enumerable" do
       expect_raises Enumerable::NotFoundError do
         [1, 2, 3].find! { false }
       end
+    end
+  end
+
+  describe "find_value" do
+    it "finds and returns the first truthy block result" do
+      [1, 2, 3].find_value { |i| "1" if i == 1 }.should eq "1"
+      {1, 2, 3}.find_value { |i| "2" if i == 2 }.should eq "2"
+      (1..3).find_value { |i| "3" if i == 3 }.should eq "3"
+
+      # Block returns `true && expression` vs the above `expression if true`.
+      # Same idea, but a different idiom. It serves as an allegory for the next
+      # test which checks `false` vs `nil`.
+      [1, 2, 3].find_value { |i| i == 1 && "1" }.should eq "1"
+      {1, 2, 3}.find_value { |i| i == 2 && "2" }.should eq "2"
+      (1..3).find_value { |i| i == 3 && "3" }.should eq "3"
+    end
+
+    it "returns the default value if there are no truthy block results" do
+      {1, 2, 3}.find_value { |i| "4" if i == 4 }.should eq nil
+      {1, 2, 3}.find_value "nope" { |i| "4" if i == 4 }.should eq "nope"
+      ([] of Int32).find_value false { true }.should eq false
+
+      # Same as above but returns `false` instead of `nil`.
+      {1, 2, 3}.find_value { |i| i == 4 && "4" }.should eq nil
+      {1, 2, 3}.find_value "nope" { |i| i == 4 && "4" }.should eq "nope"
     end
   end
 
@@ -1431,6 +1503,10 @@ describe "Enumerable" do
         hash.should eq(
           {'c' => 1, 'r' => 2, 'y' => 2, 's' => 1, 't' => 1, 'a' => 1, 'l' => 1, 'u' => 1, 'b' => 1}
         )
+      end
+
+      it "tallies an interface type" do
+        InterfaceEnumerable.new.tally.should eq({One.new => 1, Two.new => 1})
       end
     end
   end
