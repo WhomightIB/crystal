@@ -249,7 +249,12 @@ module LLVM
       Pointer
       Vector
       Metadata
-      X86_MMX
+      X86_MMX # deleted in LLVM 20
+      Token
+      ScalableVector
+      BFloat
+      X86_AMX
+      TargetExt
     end
   end
 
@@ -438,6 +443,11 @@ module LLVM
 
     BigEndian    = 1 << 27
     LittleEndian = 1 << 28
+  end
+
+  enum InlineAsmDialect
+    ATT
+    Intel
   end
 
   struct Value

@@ -101,8 +101,8 @@ module Indexable(T)
   # ary[-1]? # => 'c'
   # ary[-2]? # => 'b'
   #
-  # ary[3]?  # nil
-  # ary[-4]? # nil
+  # ary[3]?  # => nil
+  # ary[-4]? # => nil
   # ```
   @[AlwaysInline]
   def []?(index : Int)
@@ -693,14 +693,14 @@ module Indexable(T)
     end
   end
 
-  # Returns an `Array` with all the elements in the collection.
+  # Returns an `Array` with the results of running *block* against each element of the collection.
   #
   # ```
-  # {1, 2, 3}.to_a # => [1, 2, 3]
+  # {1, 2, 3}.to_a { |i| i * 2 } # => [2, 4, 6]
   # ```
-  def to_a : Array(T)
-    ary = Array(T).new(size)
-    each { |e| ary << e }
+  def to_a(& : T -> U) : Array(U) forall U
+    ary = Array(U).new(size)
+    each { |e| ary << yield e }
     ary
   end
 
@@ -744,7 +744,7 @@ module Indexable(T)
     true
   end
 
-  # :inherited:
+  # :inherit:
   def first(&)
     size == 0 ? yield : unsafe_fetch(0)
   end
@@ -1483,7 +1483,7 @@ module Indexable(T)
       @copy = array.dup
       @indices = Array.new(@size, 0)
       @pool = @indices.map { |i| @copy[i] }
-      @stop = @size > @n
+      @stop = false
       @i = @size - 1
       @first = true
     end

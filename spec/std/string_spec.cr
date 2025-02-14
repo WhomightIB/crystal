@@ -1,4 +1,5 @@
 require "./spec_helper"
+require "../support/string"
 require "spec/helpers/iterate"
 require "spec/helpers/string"
 
@@ -320,6 +321,7 @@ describe "String" do
     it { expect_raises(ArgumentError) { "1__234".to_i } }
     it { expect_raises(ArgumentError) { "1_234".to_i } }
     it { expect_raises(ArgumentError) { "   1234   ".to_i(whitespace: false) } }
+    it { expect_raises(ArgumentError) { "".to_i(whitespace: false) } }
     it { expect_raises(ArgumentError) { "0x123".to_i } }
     it { expect_raises(ArgumentError) { "0b123".to_i } }
     it { expect_raises(ArgumentError) { "000b123".to_i(prefix: true) } }
@@ -480,6 +482,7 @@ describe "String" do
     it { "1Y2P0IJ32E8E7".to_i64(36).should eq(9223372036854775807) }
   end
 
+  # more specs are available in `spec/manual/string_to_f_supplemental_spec.cr`
   it "does to_f" do
     expect_raises(ArgumentError) { "".to_f }
     "".to_f?.should be_nil
@@ -501,6 +504,7 @@ describe "String" do
     "  1234.56  ".to_f?(whitespace: false).should be_nil
     expect_raises(ArgumentError) { "  1234.56foo".to_f }
     "  1234.56foo".to_f?.should be_nil
+    "\u{A0}\u{2028}\u{2029}1234.56\u{A0}\u{2028}\u{2029}".to_f.should eq(1234.56_f64)
     "123.45 x".to_f64(strict: false).should eq(123.45_f64)
     expect_raises(ArgumentError) { "x1.2".to_f64 }
     "x1.2".to_f64?.should be_nil
@@ -514,6 +518,7 @@ describe "String" do
     "nan".to_f?(whitespace: false).try(&.nan?).should be_true
     " nan".to_f?(whitespace: false).should be_nil
     "nan ".to_f?(whitespace: false).should be_nil
+    expect_raises(ArgumentError) { "".to_f(whitespace: false) }
     "nani".to_f?(strict: true).should be_nil
     " INF".to_f?.should eq Float64::INFINITY
     "INF".to_f?.should eq Float64::INFINITY
@@ -544,6 +549,7 @@ describe "String" do
     "  1234.56  ".to_f32?(whitespace: false).should be_nil
     expect_raises(ArgumentError) { "  1234.56foo".to_f32 }
     "  1234.56foo".to_f32?.should be_nil
+    "\u{A0}\u{2028}\u{2029}1234.56\u{A0}\u{2028}\u{2029}".to_f32.should eq(1234.56_f32)
     "123.45 x".to_f32(strict: false).should eq(123.45_f32)
     expect_raises(ArgumentError) { "x1.2".to_f32 }
     "x1.2".to_f32?.should be_nil
@@ -587,6 +593,7 @@ describe "String" do
     "  1234.56  ".to_f64?(whitespace: false).should be_nil
     expect_raises(ArgumentError) { "  1234.56foo".to_f64 }
     "  1234.56foo".to_f64?.should be_nil
+    "\u{A0}\u{2028}\u{2029}1234.56\u{A0}\u{2028}\u{2029}".to_f64.should eq(1234.56_f64)
     "123.45 x".to_f64(strict: false).should eq(123.45_f64)
     expect_raises(ArgumentError) { "x1.2".to_f64 }
     "x1.2".to_f64?.should be_nil
@@ -723,6 +730,10 @@ describe "String" do
     it { assert_prints "  spáçes before".titleize, "  Spáçes Before" }
     it { assert_prints "testá-se múitô".titleize, "Testá-se Múitô" }
     it { assert_prints "iO iO".titleize(Unicode::CaseOptions::Turkic), "İo İo" }
+    it { assert_prints "foo_Bar".titleize, "Foo_bar" }
+    it { assert_prints "foo_bar".titleize, "Foo_bar" }
+    it { assert_prints "testá_se múitô".titleize(underscore_to_space: true), "Testá Se Múitô" }
+    it { assert_prints "foo_bar".titleize(underscore_to_space: true), "Foo Bar" }
 
     it "handles multi-character mappings correctly (#13533)" do
       assert_prints "ﬄİ İﬄ ǳ Ǳ".titleize, "Ffli̇ İﬄ ǲ ǲ"
@@ -733,6 +744,12 @@ describe "String" do
       "a\xA0b".titleize.should eq("A\xA0b")
       String.build { |io| "\xB5!\xE0\xC1\xB5?".titleize(io) }.should eq("\xB5!\xE0\xC1\xB5?".scrub)
       String.build { |io| "a\xA0b".titleize(io) }.should eq("A\xA0b".scrub)
+    end
+
+    describe "with IO" do
+      it { String.build { |io| "foo_Bar".titleize io }.should eq "Foo_bar" }
+      it { String.build { |io| "foo_bar".titleize io }.should eq "Foo_bar" }
+      it { String.build { |io| "foo_bar".titleize(io, underscore_to_space: true) }.should eq "Foo Bar" }
     end
   end
 
@@ -760,6 +777,24 @@ describe "String" do
     it { "hello\n\n\n\n".chomp("").should eq("hello\n\n\n\n") }
 
     it { "hello\r\n".chomp("\n").should eq("hello") }
+
+    it "pre-computes string size if possible" do
+      {"!hello!", "\u{1f602}hello\u{1f602}", "\xFEhello\xFF"}.each do |str|
+        {"", "\n", "\r", "\r\n"}.each do |newline|
+          x = str + newline
+          x.size_known?.should be_true
+          y = x.chomp
+          y.@length.should eq(7)
+        end
+      end
+    end
+
+    it "does not pre-compute string size if not possible" do
+      x = String.build &.<< "abc\n"
+      x.size_known?.should be_false
+      y = x.chomp
+      y.size_known?.should be_false
+    end
   end
 
   describe "lchop" do
@@ -944,6 +979,8 @@ describe "String" do
       it { "日本語".index('本').should eq(1) }
       it { "bar".index('あ').should be_nil }
       it { "あいう_えお".index('_').should eq(3) }
+      it { "xyz\xFFxyz".index('\u{FFFD}').should eq(3) }
+      it { "日\xFF語".index('\u{FFFD}').should eq(1) }
 
       describe "with offset" do
         it { "foobarbaz".index('a', 5).should eq(7) }
@@ -951,6 +988,10 @@ describe "String" do
         it { "foo".index('g', 1).should be_nil }
         it { "foo".index('g', -20).should be_nil }
         it { "日本語日本語".index('本', 2).should eq(4) }
+        it { "xyz\xFFxyz".index('\u{FFFD}', 2).should eq(3) }
+        it { "xyz\xFFxyz".index('\u{FFFD}', 4).should be_nil }
+        it { "日本\xFF語".index('\u{FFFD}', 2).should eq(2) }
+        it { "日本\xFF語".index('\u{FFFD}', 3).should be_nil }
 
         # Check offset type
         it { "foobarbaz".index('a', 5_i64).should eq(7) }
@@ -994,6 +1035,7 @@ describe "String" do
     describe "by regex" do
       it { "string 12345".index(/\d+/).should eq(7) }
       it { "12345".index(/\d/).should eq(0) }
+      it { "Hello\xFF".index(/l/, options: Regex::MatchOptions::NO_UTF_CHECK).should eq(2) }
       it { "Hello, world!".index(/\d/).should be_nil }
       it { "abcdef".index(/[def]/).should eq(3) }
       it { "日本語日本語".index(/本語/).should eq(1) }
@@ -1001,6 +1043,7 @@ describe "String" do
       describe "with offset" do
         it { "abcDef".index(/[A-Z]/).should eq(3) }
         it { "foobarbaz".index(/ba/, -5).should eq(6) }
+        it { "Hello\xFF".index(/l/, 3, options: Regex::MatchOptions::NO_UTF_CHECK).should eq(3) }
         it { "Foo".index(/[A-Z]/, 1).should be_nil }
         it { "foo".index(/o/, 2).should eq(2) }
         it { "foo".index(//, 3).should eq(3) }
@@ -1064,6 +1107,7 @@ describe "String" do
     describe "by regex" do
       it { "string 12345".index!(/\d+/).should eq(7) }
       it { "12345".index!(/\d/).should eq(0) }
+      it { "Hello\xFF".index!(/l/, options: Regex::MatchOptions::NO_UTF_CHECK).should eq(2) }
       it do
         expect_raises(Enumerable::NotFoundError) do
           "Hello, world!".index!(/\d/)
@@ -1073,6 +1117,7 @@ describe "String" do
       describe "with offset" do
         it { "abcDef".index!(/[A-Z]/).should eq(3) }
         it { "foobarbaz".index!(/ba/, -5).should eq(6) }
+        it { "Hello\xFF".index!(/l/, 3, options: Regex::MatchOptions::NO_UTF_CHECK).should eq(3) }
         it do
           expect_raises(Enumerable::NotFoundError) do
             "Foo".index!(/[A-Z]/, 1)
@@ -1089,6 +1134,8 @@ describe "String" do
       it { "foobar".rindex('g').should be_nil }
       it { "日本語日本語".rindex('本').should eq(4) }
       it { "あいう_えお".rindex('_').should eq(3) }
+      it { "xyz\xFFxyz".rindex('\u{FFFD}').should eq(3) }
+      it { "日\xFF語".rindex('\u{FFFD}').should eq(1) }
 
       describe "with offset" do
         it { "bbbb".rindex('b', 2).should eq(2) }
@@ -1101,6 +1148,10 @@ describe "String" do
         it { "faobar".rindex('a', 3).should eq(1) }
         it { "faobarbaz".rindex('a', -3).should eq(4) }
         it { "日本語日本語".rindex('本', 3).should eq(1) }
+        it { "xyz\xFFxyz".rindex('\u{FFFD}', 4).should eq(3) }
+        it { "xyz\xFFxyz".rindex('\u{FFFD}', 2).should be_nil }
+        it { "日本\xFF語".rindex('\u{FFFD}', 2).should eq(2) }
+        it { "日本\xFF語".rindex('\u{FFFD}', 1).should be_nil }
 
         # Check offset type
         it { "bbbb".rindex('b', 2_i64).should eq(2) }
@@ -1141,6 +1192,7 @@ describe "String" do
 
     describe "by regex" do
       it { "bbbb".rindex(/b/).should eq(3) }
+      it { "\xFFbbb".rindex(/b/, options: Regex::MatchOptions::NO_UTF_CHECK).should eq(3) }
       it { "a43b53".rindex(/\d+/).should eq(4) }
       it { "bbbb".rindex(/\d/).should be_nil }
 
@@ -1152,6 +1204,7 @@ describe "String" do
 
       describe "with offset" do
         it { "bbbb".rindex(/b/, 2).should eq(2) }
+        it { "\xFFbbb".rindex(/b/, 2, options: Regex::MatchOptions::NO_UTF_CHECK).should eq(2) }
         it { "abbbb".rindex(/b/, 0).should be_nil }
         it { "abbbb".rindex(/a/, 0).should eq(0) }
         it { "bbbb".rindex(/b/, -2).should eq(2) }
@@ -1208,6 +1261,7 @@ describe "String" do
 
     describe "by regex" do
       it { "bbbb".rindex!(/b/).should eq(3) }
+      it { "\xFFbbb".rindex!(/b/, options: Regex::MatchOptions::NO_UTF_CHECK).should eq(3) }
       it { "a43b53".rindex!(/\d+/).should eq(4) }
       it do
         expect_raises(Enumerable::NotFoundError) do
@@ -1217,6 +1271,7 @@ describe "String" do
 
       describe "with offset" do
         it { "bbbb".rindex!(/b/, 2).should eq(2) }
+        it { "\xFFbbb".rindex!(/b/, 2, options: Regex::MatchOptions::NO_UTF_CHECK).should eq(2) }
         it do
           expect_raises(Enumerable::NotFoundError) do
             "abbbb".rindex!(/b/, 0)
@@ -1315,6 +1370,27 @@ describe "String" do
       "foo foo".byte_index("oo").should eq(1)
       "foo foo".byte_index("oo", 2).should eq(5)
       "こんにちは世界".byte_index("ちは").should eq(9)
+    end
+
+    it "gets byte index of regex" do
+      str = "0123x"
+      pattern = /x/
+
+      str.byte_index(pattern).should eq(4)
+      str.byte_index(pattern, offset: 4).should eq(4)
+      str.byte_index(pattern, offset: 5).should be_nil
+      str.byte_index(pattern, offset: -1).should eq(4)
+      str.byte_index(/y/).should be_nil
+
+      str = "012abc678"
+      pattern = /[abc]/
+
+      str.byte_index(pattern).should eq(3)
+      str.byte_index(pattern, offset: 2).should eq(3)
+      str.byte_index(pattern, offset: 5).should eq(5)
+      str.byte_index(pattern, offset: -4).should eq(5)
+      str.byte_index(pattern, offset: -1).should be_nil
+      str.byte_index(/y/).should be_nil
     end
   end
 
@@ -1416,6 +1492,7 @@ describe "String" do
       it { "=".split(/\=/, 2).should eq(["", ""]) }
       it { "=".split(/\=/, 2, remove_empty: true).should eq([] of String) }
       it { ",".split(/(?:(x)|(,))/).should eq(["", ",", ""]) }
+      it { "ba".split(/a/, options: :anchored).should eq ["ba"] }
 
       it "keeps groups" do
         s = "split on the word on okay?"
@@ -1690,6 +1767,18 @@ describe "String" do
 
     it "subs at index with string, non-ascii" do
       "あいうえお".sub(2, "けくこ").should eq("あいけくこえお")
+    end
+
+    it "raises if index is out of bounds" do
+      expect_raises(IndexError) { "hello".sub(5, 'x') }
+      expect_raises(IndexError) { "hello".sub(6, "") }
+      expect_raises(IndexError) { "hello".sub(-6, 'x') }
+      expect_raises(IndexError) { "hello".sub(-7, "") }
+
+      expect_raises(IndexError) { "あいうえお".sub(5, 'x') }
+      expect_raises(IndexError) { "あいうえお".sub(6, "") }
+      expect_raises(IndexError) { "あいうえお".sub(-6, 'x') }
+      expect_raises(IndexError) { "あいうえお".sub(-7, "") }
     end
 
     it "subs range with char" do
@@ -2322,6 +2411,10 @@ describe "String" do
     it "does with number and string" do
       "1ab4".scan(/\d+/).map(&.[0]).should eq(["1", "4"])
     end
+
+    it "options parameter" do
+      "ba".scan(/a/, options: :anchored).map(&.[0]).should eq [] of String
+    end
   end
 
   it "has match" do
@@ -2341,6 +2434,33 @@ describe "String" do
   it "matches, but returns Bool" do
     "foo".matches?(/foo/).should eq(true)
     "foo".matches?(/bar/).should eq(false)
+  end
+
+  it "#matches_full?" do
+    pending! if {{ Regex::Engine.resolve.name == "Regex::PCRE" }}
+    "foo".matches_full?(/foo/).should be_true
+    "fooo".matches_full?(/foo/).should be_false
+    "ofoo".matches_full?(/foo/).should be_false
+    "pattern".matches_full?(/(\A)?pattern(\z)?/).should be_true
+    "_pattern_".matches_full?(/(\A)?pattern(\z)?/).should be_false
+  end
+
+  it "#match_full" do
+    pending! if {{ Regex::Engine.resolve.name == "Regex::PCRE" }}
+    "foo".match_full(/foo/).not_nil![0].should eq "foo"
+    "fooo".match_full(/foo/).should be_nil
+    "ofoo".match_full(/foo/).should be_nil
+    "pattern".match_full(/(\A)?pattern(\z)?/).not_nil![0].should eq "pattern"
+    "_pattern_".match_full(/(\A)?pattern(\z)?/).should be_nil
+  end
+
+  it "#match_full!" do
+    pending! if {{ Regex::Engine.resolve.name == "Regex::PCRE" }}
+    "foo".match_full!(/foo/).not_nil![0].should eq "foo"
+    expect_raises(Regex::Error) { "fooo".match_full!(/foo/) }
+    expect_raises(Regex::Error) { "ofoo".match_full!(/foo/) }
+    "pattern".match_full!(/(\A)?pattern(\z)?/).not_nil![0].should eq "pattern"
+    expect_raises(Regex::Error) { "_pattern_".match_full!(/(\A)?pattern(\z)?/) }
   end
 
   it "has size (same as size)" do
@@ -2660,14 +2780,12 @@ describe "String" do
       end
     end
 
-    {% unless flag?(:wasm32) %}
-      it "allocates buffer of correct size (#3332)" do
-        String.new(255_u8) do |buffer|
-          LibGC.size(buffer).should be > 255
-          {255, 0}
-        end
+    pending_wasm32 "allocates buffer of correct size (#3332)" do
+      String.new(255_u8) do |buffer|
+        LibGC.size(buffer).should be > 255
+        {255, 0}
       end
-    {% end %}
+    end
 
     it "raises if returned bytesize is greater than capacity" do
       expect_raises ArgumentError, "Bytesize out of capacity bounds" do
@@ -2755,7 +2873,7 @@ describe "String" do
         bytes.to_a.should eq([72, 0, 101, 0, 108, 0, 108, 0, 111, 0])
       end
 
-      {% unless flag?(:musl) || flag?(:freebsd) || flag?(:dragonfly) %}
+      {% unless flag?(:musl) || flag?(:solaris) || flag?(:freebsd) || flag?(:dragonfly) || flag?(:netbsd) %}
         it "flushes the shift state (#11992)" do
           "\u{00CA}".encode("BIG5-HKSCS").should eq(Bytes[0x88, 0x66])
           "\u{00CA}\u{0304}".encode("BIG5-HKSCS").should eq(Bytes[0x88, 0x62])
@@ -2764,7 +2882,7 @@ describe "String" do
 
       # FreeBSD iconv encoder expects ISO/IEC 10646 compatibility code points,
       # see https://www.ccli.gov.hk/doc/e_hkscs_2008.pdf for details.
-      {% if flag?(:freebsd) || flag?(:dragonfly) %}
+      {% if flag?(:freebsd) || flag?(:dragonfly) || flag?(:netbsd) %}
         it "flushes the shift state (#11992)" do
           "\u{F329}".encode("BIG5-HKSCS").should eq(Bytes[0x88, 0x66])
           "\u{F325}".encode("BIG5-HKSCS").should eq(Bytes[0x88, 0x62])
@@ -2808,7 +2926,7 @@ describe "String" do
         String.new(bytes, "UTF-16LE").should eq("Hello")
       end
 
-      {% unless flag?(:freebsd) || flag?(:dragonfly) %}
+      {% unless flag?(:solaris) || flag?(:freebsd) || flag?(:dragonfly) || flag?(:netbsd) %}
         it "decodes with shift state" do
           String.new(Bytes[0x88, 0x66], "BIG5-HKSCS").should eq("\u{00CA}")
           String.new(Bytes[0x88, 0x62], "BIG5-HKSCS").should eq("\u{00CA}\u{0304}")
@@ -2817,7 +2935,7 @@ describe "String" do
 
       # FreeBSD iconv decoder returns ISO/IEC 10646-1:2000 code points,
       # see https://www.ccli.gov.hk/doc/e_hkscs_2008.pdf for details.
-      {% if flag?(:freebsd) || flag?(:dragonfly) %}
+      {% if flag?(:freebsd) || flag?(:dragonfly) || flag?(:netbsd) %}
         it "decodes with shift state" do
           String.new(Bytes[0x88, 0x66], "BIG5-HKSCS").should eq("\u{00CA}")
           String.new(Bytes[0x88, 0x62], "BIG5-HKSCS").should eq("\u{F325}")
@@ -2916,65 +3034,13 @@ describe "String" do
       "hello".valid_encoding?.should be_true
       "hello\u{80}\u{7FF}\u{800}\u{FFFF}\u{10000}\u{10FFFF}".valid_encoding?.should be_true
 
-      # non-starters
-      String.new(Bytes[0x80]).valid_encoding?.should be_false
-      String.new(Bytes[0x8F]).valid_encoding?.should be_false
-      String.new(Bytes[0x90]).valid_encoding?.should be_false
-      String.new(Bytes[0x9F]).valid_encoding?.should be_false
-      String.new(Bytes[0xA0]).valid_encoding?.should be_false
-      String.new(Bytes[0xAF]).valid_encoding?.should be_false
+      {% for bytes in VALID_UTF8_BYTE_SEQUENCES %}
+        String.new(Bytes{{ bytes }}).valid_encoding?.should be_true
+      {% end %}
 
-      # incomplete, 2-byte
-      String.new(Bytes[0xC2]).valid_encoding?.should be_false
-      String.new(Bytes[0xC2, 0x00]).valid_encoding?.should be_false
-      String.new(Bytes[0xC2, 0xC2]).valid_encoding?.should be_false
-
-      # overlong, 2-byte
-      String.new(Bytes[0xC0, 0x80]).valid_encoding?.should be_false
-      String.new(Bytes[0xC1, 0xBF]).valid_encoding?.should be_false
-      String.new(Bytes[0xC2, 0x80]).valid_encoding?.should be_true
-
-      # incomplete, 3-byte
-      String.new(Bytes[0xE1]).valid_encoding?.should be_false
-      String.new(Bytes[0xE1, 0x00]).valid_encoding?.should be_false
-      String.new(Bytes[0xE1, 0xC2]).valid_encoding?.should be_false
-      String.new(Bytes[0xE1, 0x80]).valid_encoding?.should be_false
-      String.new(Bytes[0xE1, 0x80, 0x00]).valid_encoding?.should be_false
-      String.new(Bytes[0xE1, 0x80, 0xC2]).valid_encoding?.should be_false
-
-      # overlong, 3-byte
-      String.new(Bytes[0xE0, 0x80, 0x80]).valid_encoding?.should be_false
-      String.new(Bytes[0xE0, 0x9F, 0xBF]).valid_encoding?.should be_false
-      String.new(Bytes[0xE0, 0xA0, 0x80]).valid_encoding?.should be_true
-
-      # surrogate pairs
-      String.new(Bytes[0xED, 0x9F, 0xBF]).valid_encoding?.should be_true
-      String.new(Bytes[0xED, 0xA0, 0x80]).valid_encoding?.should be_false
-      String.new(Bytes[0xED, 0xBF, 0xBF]).valid_encoding?.should be_false
-      String.new(Bytes[0xEE, 0x80, 0x80]).valid_encoding?.should be_true
-
-      # incomplete, 4-byte
-      String.new(Bytes[0xF1]).valid_encoding?.should be_false
-      String.new(Bytes[0xF1, 0x00]).valid_encoding?.should be_false
-      String.new(Bytes[0xF1, 0xC2]).valid_encoding?.should be_false
-      String.new(Bytes[0xF1, 0x80]).valid_encoding?.should be_false
-      String.new(Bytes[0xF1, 0x80, 0x00]).valid_encoding?.should be_false
-      String.new(Bytes[0xF1, 0x80, 0xC2]).valid_encoding?.should be_false
-      String.new(Bytes[0xF1, 0x80, 0x80]).valid_encoding?.should be_false
-      String.new(Bytes[0xF1, 0x80, 0x80, 0x00]).valid_encoding?.should be_false
-      String.new(Bytes[0xF1, 0x80, 0x80, 0xC2]).valid_encoding?.should be_false
-
-      # overlong, 4-byte
-      String.new(Bytes[0xF0, 0x80, 0x80, 0x80]).valid_encoding?.should be_false
-      String.new(Bytes[0xF0, 0x8F, 0xBF, 0xBF]).valid_encoding?.should be_false
-      String.new(Bytes[0xF0, 0x90, 0x80, 0x80]).valid_encoding?.should be_true
-
-      # upper boundary, 4-byte
-      String.new(Bytes[0xF4, 0x8F, 0xBF, 0xBF]).valid_encoding?.should be_true
-      String.new(Bytes[0xF4, 0x90, 0x80, 0x80]).valid_encoding?.should be_false
-      String.new(Bytes[0xF5]).valid_encoding?.should be_false
-      String.new(Bytes[0xF8]).valid_encoding?.should be_false
-      String.new(Bytes[0xFF]).valid_encoding?.should be_false
+      {% for bytes in INVALID_UTF8_BYTE_SEQUENCES %}
+        String.new(Bytes{{ bytes }}).valid_encoding?.should be_false
+      {% end %}
     end
 
     it "scrubs" do
@@ -3084,44 +3150,13 @@ end
 class String
   describe String do
     it ".char_bytesize_at" do
-      String.char_bytesize_at(Bytes[0x00, 0].to_unsafe).should eq 1
-      String.char_bytesize_at(Bytes[0x7F, 0].to_unsafe).should eq 1
-      String.char_bytesize_at(Bytes[0x80, 0].to_unsafe).should eq 1 # malformed
-      String.char_bytesize_at(Bytes[0xBF, 0].to_unsafe).should eq 1 # malformed
-      String.char_bytesize_at(Bytes[0xC2, 0].to_unsafe).should eq 1 # malformed
-      String.char_bytesize_at(Bytes[0xC3, 0].to_unsafe).should eq 1 # malformed
+      {% for bytes, char in VALID_UTF8_BYTE_SEQUENCES %}
+        String.char_bytesize_at(Bytes[{{ bytes.splat }}, 0].to_unsafe).should eq({{ bytes.size }})
+      {% end %}
 
-      String.char_bytesize_at(Bytes[0xC2, 0x7F, 0].to_unsafe).should eq 1 # malformed
-      String.char_bytesize_at(Bytes[0xC2, 0x80, 0].to_unsafe).should eq 2
-      String.char_bytesize_at(Bytes[0xDF, 0xBF, 0].to_unsafe).should eq 2
-      String.char_bytesize_at(Bytes[0xDF, 0xC0, 0].to_unsafe).should eq 1 # malformed
-
-      String.char_bytesize_at(Bytes[0xE0, 0xA0, 0x7F, 0].to_unsafe).should eq 1 # malformed
-      String.char_bytesize_at(Bytes[0xE0, 0x9F, 0x8F, 0].to_unsafe).should eq 1 # malformed
-      String.char_bytesize_at(Bytes[0xE0, 0xA0, 0x80, 0].to_unsafe).should eq 3
-      String.char_bytesize_at(Bytes[0xED, 0x9F, 0xBF, 0].to_unsafe).should eq 3
-      String.char_bytesize_at(Bytes[0xED, 0x9F, 0xC0, 0].to_unsafe).should eq 1 # surrogate
-      String.char_bytesize_at(Bytes[0xED, 0xBF, 0xBF, 0].to_unsafe).should eq 1 # surrogate
-      String.char_bytesize_at(Bytes[0xEE, 0x80, 0x80, 0].to_unsafe).should eq 3
-      String.char_bytesize_at(Bytes[0xEF, 0xBF, 0xBD, 0].to_unsafe).should eq 3
-      String.char_bytesize_at(Bytes[0xEF, 0xBF, 0xBF, 0].to_unsafe).should eq 3
-      String.char_bytesize_at(Bytes[0xEF, 0xBF, 0xC0, 0].to_unsafe).should eq 1 # malformed
-      String.char_bytesize_at(Bytes[0xEF, 0xC0, 0xBF, 0].to_unsafe).should eq 1 # malformed
-
-      String.char_bytesize_at(Bytes[0xF0, 0x90, 0x80, 0x7F, 0].to_unsafe).should eq 1 # malformed
-      String.char_bytesize_at(Bytes[0xF0, 0x90, 0x7F, 0x80, 0].to_unsafe).should eq 1 # malformed
-      String.char_bytesize_at(Bytes[0xF0, 0x8F, 0x80, 0x80, 0].to_unsafe).should eq 1 # malformed
-      String.char_bytesize_at(Bytes[0xF0, 0x90, 0x80, 0x80, 0].to_unsafe).should eq 4
-      String.char_bytesize_at(Bytes[0xF0, 0x9F, 0xBF, 0xBF, 0].to_unsafe).should eq 4
-      String.char_bytesize_at(Bytes[0xF3, 0x90, 0x80, 0x80, 0].to_unsafe).should eq 4
-      String.char_bytesize_at(Bytes[0xF4, 0x8F, 0xBD, 0xBF, 0].to_unsafe).should eq 4
-      String.char_bytesize_at(Bytes[0xF4, 0x8F, 0xBF, 0xBF, 0].to_unsafe).should eq 4
-      String.char_bytesize_at(Bytes[0xF4, 0x8F, 0xBF, 0xC0, 0].to_unsafe).should eq 1 # malformed
-      String.char_bytesize_at(Bytes[0xF4, 0x8F, 0xC0, 0xBF, 0].to_unsafe).should eq 1 # malformed
-      String.char_bytesize_at(Bytes[0xF4, 0x90, 0xBF, 0xBF, 0].to_unsafe).should eq 1 # malformed
-
-      String.char_bytesize_at(Bytes[0xF5, 0].to_unsafe).should eq 1 # out of codepoint range
-      String.char_bytesize_at(Bytes[0xFF, 0].to_unsafe).should eq 1 # out of codepoint range
+      {% for bytes in INVALID_UTF8_BYTE_SEQUENCES %}
+        String.char_bytesize_at(Bytes[{{ bytes.splat }}, 0].to_unsafe).should eq 1
+      {% end %}
     end
   end
 end

@@ -1,6 +1,7 @@
 require "crystal/system/thread_linked_list"
+require "crystal/print_buffered"
 require "./fiber/context"
-require "./fiber/stack_pool"
+require "./fiber/stack"
 
 # :nodoc:
 @[NoInline]
@@ -44,25 +45,29 @@ end
 # notifications that IO is ready or a timeout reached. When a fiber can be woken,
 # the event loop enqueues it in the scheduler
 class Fiber
-  # :nodoc:
-  protected class_getter(fibers) { Thread::LinkedList(Fiber).new }
+  @@fibers = uninitialized Thread::LinkedList(Fiber)
+
+  protected def self.fibers : Thread::LinkedList(Fiber)
+    @@fibers
+  end
 
   # :nodoc:
-  class_getter stack_pool = StackPool.new
+  def self.init : Nil
+    @@fibers = Thread::LinkedList(Fiber).new
+  end
 
   @context : Context
-  @stack : Void*
+  @stack : Stack
   @resume_event : Crystal::EventLoop::Event?
   @timeout_event : Crystal::EventLoop::Event?
   # :nodoc:
   property timeout_select_action : Channel::TimeoutAction?
-  protected property stack_bottom : Void*
 
   # The name of the fiber, used as internal reference.
   property name : String?
 
   @alive = true
-  @current_thread = Atomic(Thread?).new(nil)
+  {% if flag?(:preview_mt) %} @current_thread = Atomic(Thread?).new(nil) {% end %}
 
   # :nodoc:
   property next : Fiber?
@@ -71,13 +76,23 @@ class Fiber
   property previous : Fiber?
 
   # :nodoc:
+  property list_next : Fiber?
+
+  # :nodoc:
   def self.inactive(fiber : Fiber)
     fibers.delete(fiber)
   end
 
   # :nodoc:
   def self.unsafe_each(&)
-    fibers.unsafe_each { |fiber| yield fiber }
+    # nothing to iterate when @@fibers is nil + don't lazily allocate in a
+    # method called from a GC collection callback!
+    @@fibers.try(&.unsafe_each { |fiber| yield fiber })
+  end
+
+  # :nodoc:
+  def self.each(&)
+    fibers.each { |fiber| yield fiber }
   end
 
   # Creates a new `Fiber` instance.
@@ -85,44 +100,30 @@ class Fiber
   # When the fiber is executed, it runs *proc* in its context.
   #
   # *name* is an optional and used only as an internal reference.
-  def initialize(@name : String? = nil, &@proc : ->)
-    @context = Context.new
-    @stack, @stack_bottom =
+  def self.new(name : String? = nil, &proc : ->)
+    stack =
       {% if flag?(:interpreted) %}
-        # For interpreted mode we don't need a new stack, the stack is held by the interpreter
-        {Pointer(Void).null, Pointer(Void).null}
+        # the interpreter is managing the stacks
+        Stack.new(Pointer(Void).null, Pointer(Void).null)
       {% else %}
-        Fiber.stack_pool.checkout
+        Crystal::Scheduler.stack_pool.checkout
       {% end %}
+    new(name, stack, &proc)
+  end
+
+  # :nodoc:
+  def initialize(@name : String?, @stack : Stack, &@proc : ->)
+    @context = Context.new
 
     fiber_main = ->(f : Fiber) { f.run }
-
-    # FIXME: This line shouldn't be necessary (#7975)
-    stack_ptr = nil
-    {% if flag?(:win32) %}
-      # align stack bottom to 16 bytes
-      @stack_bottom = Pointer(Void).new(@stack_bottom.address & ~0x0f_u64)
-
-      # It's the caller's responsibility to allocate 32 bytes of "shadow space" on the stack right
-      # before calling the function (regardless of the actual number of parameters used)
-
-      stack_ptr = @stack_bottom - sizeof(Void*) * 6
-    {% else %}
-      # point to first addressable pointer on the stack (@stack_bottom points past
-      # the stack because the stack grows down):
-      stack_ptr = @stack_bottom - sizeof(Void*)
-    {% end %}
-
-    # align the stack pointer to 16 bytes:
-    stack_ptr = Pointer(Void*).new(stack_ptr.address & ~0x0f_u64)
-
+    stack_ptr = @stack.first_addressable_pointer
     makecontext(stack_ptr, fiber_main)
 
     Fiber.fibers.push(self)
   end
 
   # :nodoc:
-  def initialize(@stack : Void*, thread)
+  def initialize(stack : Void*, thread)
     @proc = Proc(Void).new { }
 
     # TODO: should creating a new context for the main fiber also be platform specific?
@@ -134,9 +135,12 @@ class Fiber
       {% else %}
         Context.new(_fiber_get_stack_top)
       {% end %}
-    thread.gc_thread_handler, @stack_bottom = GC.current_thread_stack_bottom
+
+    thread.gc_thread_handler, stack_bottom = GC.current_thread_stack_bottom
+    @stack = Stack.new(stack, stack_bottom)
+
     @name = "main"
-    @current_thread.set(thread)
+    {% if flag?(:preview_mt) %} @current_thread.set(thread) {% end %}
     Fiber.fibers.push(self)
   end
 
@@ -146,21 +150,11 @@ class Fiber
     @proc.call
   rescue ex
     if name = @name
-      STDERR.print "Unhandled exception in spawn(name: #{name}): "
+      Crystal.print_buffered("Unhandled exception in spawn(name: %s)", name, exception: ex, to: STDERR)
     else
-      STDERR.print "Unhandled exception in spawn: "
+      Crystal.print_buffered("Unhandled exception in spawn", exception: ex, to: STDERR)
     end
-    ex.inspect_with_backtrace(STDERR)
-    STDERR.flush
   ensure
-    {% if flag?(:preview_mt) %}
-      Crystal::Scheduler.enqueue_free_stack @stack
-    {% elsif flag?(:interpreted) %}
-      # For interpreted mode we don't need a new stack, the stack is held by the interpreter
-    {% else %}
-      Fiber.stack_pool.release(@stack)
-    {% end %}
-
     # Remove the current fiber from the linked list
     Fiber.inactive(self)
 
@@ -169,13 +163,20 @@ class Fiber
     @timeout_event.try &.free
     @timeout_select_action = nil
 
+    # Additional cleanup (avoid stale references)
+    @exec_recursive_hash = nil
+    @exec_recursive_clone_hash = nil
+
     @alive = false
-    Crystal::Scheduler.reschedule
+    {% unless flag?(:interpreted) %}
+      Crystal::Scheduler.stack_pool.release(@stack)
+    {% end %}
+    Fiber.suspend
   end
 
   # Returns the current fiber.
   def self.current : Fiber
-    Crystal::Scheduler.current_fiber
+    Thread.current.current_fiber
   end
 
   # The fiber's proc is currently running or didn't fully save its context. The
@@ -225,34 +226,38 @@ class Fiber
 
   # :nodoc:
   def resume_event : Crystal::EventLoop::Event
-    @resume_event ||= Crystal::Scheduler.event_loop.create_resume_event(self)
+    @resume_event ||= Crystal::EventLoop.current.create_resume_event(self)
   end
 
   # :nodoc:
   def timeout_event : Crystal::EventLoop::Event
-    @timeout_event ||= Crystal::Scheduler.event_loop.create_timeout_event(self)
+    @timeout_event ||= Crystal::EventLoop.current.create_timeout_event(self)
   end
 
   # :nodoc:
-  def timeout(timeout : Time::Span?, select_action : Channel::TimeoutAction? = nil) : Nil
+  def timeout(timeout : Time::Span, select_action : Channel::TimeoutAction) : Nil
     @timeout_select_action = select_action
     timeout_event.add(timeout)
   end
 
   # :nodoc:
   def cancel_timeout : Nil
+    return unless @timeout_select_action
     @timeout_select_action = nil
     @timeout_event.try &.delete
   end
 
+  # :nodoc:
+  #
   # The current fiber will resume after a period of time.
   # The timeout can be cancelled with `cancel_timeout`
-  def self.timeout(timeout : Time::Span?, select_action : Channel::TimeoutAction? = nil) : Nil
-    Crystal::Scheduler.current_fiber.timeout(timeout, select_action)
+  def self.timeout(timeout : Time::Span, select_action : Channel::TimeoutAction) : Nil
+    Fiber.current.timeout(timeout, select_action)
   end
 
+  # :nodoc:
   def self.cancel_timeout : Nil
-    Crystal::Scheduler.current_fiber.cancel_timeout
+    Fiber.current.cancel_timeout
   end
 
   # Yields to the scheduler and allows it to swap execution to other
@@ -287,6 +292,20 @@ class Fiber
     Crystal::Scheduler.yield
   end
 
+  # Suspends execution of the current fiber indefinitely.
+  #
+  # Unlike `Fiber.yield` the current fiber is not automatically
+  # reenqueued and can only be resumed whith an explicit call to `#enqueue`.
+  #
+  # This is equivalent to `sleep` without a time.
+  #
+  # This method is meant to be used in concurrency primitives. It's particularly
+  # useful if the fiber needs to wait  for something to happen (for example an IO
+  # event, a message is ready in a channel, etc.) which triggers a re-enqueue.
+  def self.suspend : Nil
+    Crystal::Scheduler.reschedule
+  end
+
   def to_s(io : IO) : Nil
     io << "#<" << self.class.name << ":0x"
     object_id.to_s(io, 16)
@@ -303,6 +322,32 @@ class Fiber
   # :nodoc:
   def push_gc_roots : Nil
     # Push the used section of the stack
-    GC.push_stack @context.stack_top, @stack_bottom
+    GC.push_stack @context.stack_top, @stack.bottom
+  end
+
+  {% if flag?(:preview_mt) %}
+    # :nodoc:
+    def set_current_thread(thread = Thread.current) : Thread
+      @current_thread.set(thread)
+    end
+
+    # :nodoc:
+    def get_current_thread : Thread?
+      @current_thread.lazy_get
+    end
+  {% end %}
+
+  # :nodoc:
+  #
+  # See `Reference#exec_recursive` for details.
+  def exec_recursive_hash
+    @exec_recursive_hash ||= Hash({UInt64, Symbol}, Nil).new
+  end
+
+  # :nodoc:
+  #
+  # See `Reference#exec_recursive_clone` for details.
+  def exec_recursive_clone_hash
+    @exec_recursive_clone_hash ||= Hash(UInt64, UInt64).new
   end
 end

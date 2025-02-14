@@ -643,8 +643,7 @@ class Crystal::Call
       if obj.is_a?(InstanceVar)
         scope = self.scope
         ivar = scope.lookup_instance_var(obj.name)
-        deps = ivar.dependencies?
-        if deps && deps.size == 1 && deps.first.same?(program.nil_var)
+        if ivar.dependencies.size == 1 && ivar.dependencies.first.same?(program.nil_var)
           similar_name = scope.lookup_similar_instance_var_name(ivar.name)
           if similar_name
             msg << colorize(" (#{ivar.name} was never assigned a value, did you mean #{similar_name}?)").yellow.bold
@@ -902,7 +901,6 @@ class Crystal::Call
 
     macros = in_macro_target &.lookup_macros(def_name)
     return unless macros.is_a?(Array(Macro))
-    macros = macros.reject &.visibility.private?
 
     if msg = single_def_error_message(macros, named_args)
       raise msg
